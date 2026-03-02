@@ -1,9 +1,24 @@
 use super::{Segment, SegmentData};
-use crate::config::{InputData, ModelConfig, SegmentId, TranscriptEntry};
+use crate::config::{Config, InputData, ModelConfig, SegmentId, TranscriptEntry};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy)]
+struct ContextWindowDisplayOptions {
+    use_progress_bar: bool,
+    progress_bar_width: usize,
+}
+
+impl Default for ContextWindowDisplayOptions {
+    fn default() -> Self {
+        Self {
+            use_progress_bar: false,
+            progress_bar_width: 10,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct ContextWindowSegment;
@@ -20,41 +35,100 @@ impl ContextWindowSegment {
     }
 }
 
+fn load_display_options() -> ContextWindowDisplayOptions {
+    let default = ContextWindowDisplayOptions::default();
+    let config = match Config::load() {
+        Ok(cfg) => cfg,
+        Err(_) => return default,
+    };
+
+    let context_segment = match config.segments.iter().find(|s| s.id == SegmentId::ContextWindow) {
+        Some(segment) => segment,
+        None => return default,
+    };
+
+    let use_progress_bar = context_segment
+        .options
+        .get("use_progress_bar")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(default.use_progress_bar);
+
+    let progress_bar_width = context_segment
+        .options
+        .get("progress_bar_width")
+        .and_then(|v| v.as_u64())
+        .map(|v| v.clamp(5, 40) as usize)
+        .unwrap_or(default.progress_bar_width);
+
+    ContextWindowDisplayOptions {
+        use_progress_bar,
+        progress_bar_width,
+    }
+}
+
+fn format_token_count(token_count: u32) -> String {
+    if token_count >= 1000 {
+        let k_value = token_count as f64 / 1000.0;
+        if k_value.fract() == 0.0 {
+            format!("{}k", k_value as u32)
+        } else {
+            format!("{:.1}k", k_value)
+        }
+    } else {
+        token_count.to_string()
+    }
+}
+
+fn format_percentage(rate: f64) -> String {
+    if rate.fract() == 0.0 {
+        format!("{:.0}%", rate)
+    } else {
+        format!("{:.1}%", rate)
+    }
+}
+
+fn build_progress_bar(rate: f64, width: usize) -> String {
+    let normalized = rate.clamp(0.0, 100.0);
+    let filled_len = ((normalized / 100.0) * width as f64).round() as usize;
+    let filled_len = filled_len.min(width);
+    let empty_len = width.saturating_sub(filled_len);
+
+    format!("{}{}", "█".repeat(filled_len), "░".repeat(empty_len))
+}
+
+fn render_context_primary(
+    context_used_token_opt: Option<u32>,
+    context_limit: u32,
+    display_options: &ContextWindowDisplayOptions,
+) -> String {
+    let context_used_token = match context_used_token_opt {
+        Some(token) => token,
+        None => return "- · - tokens".to_string(),
+    };
+
+    let context_used_rate = (context_used_token as f64 / context_limit as f64) * 100.0;
+    let percentage_display = format_percentage(context_used_rate);
+    let tokens_display = format_token_count(context_used_token);
+
+    if display_options.use_progress_bar {
+        let bar = build_progress_bar(context_used_rate, display_options.progress_bar_width);
+        let limit_display = format_token_count(context_limit);
+        format!(
+            "{} {} ({}/{})",
+            bar, percentage_display, tokens_display, limit_display
+        )
+    } else {
+        format!("{} · {} tokens", percentage_display, tokens_display)
+    }
+}
+
 impl Segment for ContextWindowSegment {
     fn collect(&self, input: &InputData) -> Option<SegmentData> {
         // Dynamically determine context limit based on current model ID
         let context_limit = Self::get_context_limit_for_model(&input.model.id);
+        let display_options = load_display_options();
 
         let context_used_token_opt = parse_transcript_usage(&input.transcript_path);
-
-        let (percentage_display, tokens_display) = match context_used_token_opt {
-            Some(context_used_token) => {
-                let context_used_rate = (context_used_token as f64 / context_limit as f64) * 100.0;
-
-                let percentage = if context_used_rate.fract() == 0.0 {
-                    format!("{:.0}%", context_used_rate)
-                } else {
-                    format!("{:.1}%", context_used_rate)
-                };
-
-                let tokens = if context_used_token >= 1000 {
-                    let k_value = context_used_token as f64 / 1000.0;
-                    if k_value.fract() == 0.0 {
-                        format!("{}k", k_value as u32)
-                    } else {
-                        format!("{:.1}k", k_value)
-                    }
-                } else {
-                    context_used_token.to_string()
-                };
-
-                (percentage, tokens)
-            }
-            None => {
-                // No usage data available
-                ("-".to_string(), "-".to_string())
-            }
-        };
 
         let mut metadata = HashMap::new();
         match context_used_token_opt {
@@ -72,7 +146,7 @@ impl Segment for ContextWindowSegment {
         metadata.insert("model".to_string(), input.model.id.clone());
 
         Some(SegmentData {
-            primary: format!("{} · {} tokens", percentage_display, tokens_display),
+            primary: render_context_primary(context_used_token_opt, context_limit, &display_options),
             secondary: String::new(),
             metadata,
         })
@@ -269,4 +343,45 @@ fn try_find_usage_from_project_history(transcript_path: &Path) -> Option<u32> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_render_progress_bar_when_enabled() {
+        let options = ContextWindowDisplayOptions {
+            use_progress_bar: true,
+            progress_bar_width: 10,
+        };
+
+        let rendered = render_context_primary(Some(74_000), 200_000, &options);
+
+        assert_eq!(rendered, "████░░░░░░ 37% (74k/200k)");
+    }
+
+    #[test]
+    fn should_keep_compact_format_when_progress_bar_disabled() {
+        let options = ContextWindowDisplayOptions {
+            use_progress_bar: false,
+            progress_bar_width: 10,
+        };
+
+        let rendered = render_context_primary(Some(74_000), 200_000, &options);
+
+        assert_eq!(rendered, "37% · 74k tokens");
+    }
+
+    #[test]
+    fn should_clamp_progress_bar_for_out_of_range_values() {
+        let options = ContextWindowDisplayOptions {
+            use_progress_bar: true,
+            progress_bar_width: 10,
+        };
+
+        let rendered = render_context_primary(Some(300_000), 200_000, &options);
+
+        assert_eq!(rendered, "██████████ 150% (300k/200k)");
+    }
 }

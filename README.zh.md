@@ -236,6 +236,36 @@ ccline --patch ~/.local/share/fnm/node-versions/v24.4.1/installation/lib/node_mo
 
 基于转录文件分析的令牌使用百分比，包含上下文限制跟踪。
 
+你也可以为 `context_window` 段启用进度条样式显示：
+
+```toml
+[[segments]]
+id = "context_window"
+enabled = true
+
+[segments.options]
+use_progress_bar = true
+progress_bar_width = 12 # 可选，范围: 5-40
+```
+
+输出示例：
+
+```text
+████░░░░░░ 37% (74k/200k)
+```
+
+如果你希望将上下文段图标改为“脑图标”，可以这样配置：
+
+```toml
+[[segments]]
+id = "context_window"
+enabled = true
+
+[segments.icon]
+plain = "🧠"
+nerd_font = "󰍛"
+```
+
 ## 配置
 
 CCometixLine 支持通过 TOML 文件和交互式 TUI 进行完整配置：

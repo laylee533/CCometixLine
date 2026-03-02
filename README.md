@@ -244,6 +244,36 @@ Shows simplified Claude model names:
 
 Token usage percentage based on transcript analysis with context limit tracking.
 
+You can also enable a progress-bar style display for the `context_window` segment:
+
+```toml
+[[segments]]
+id = "context_window"
+enabled = true
+
+[segments.options]
+use_progress_bar = true
+progress_bar_width = 12 # optional, range: 5-40
+```
+
+Example output:
+
+```text
+████░░░░░░ 37% (74k/200k)
+```
+
+If you want a "brain" icon for the context segment, configure it like this:
+
+```toml
+[[segments]]
+id = "context_window"
+enabled = true
+
+[segments.icon]
+plain = "🧠"
+nerd_font = "󰍛"
+```
+
 ## Configuration
 
 CCometixLine supports full configuration via TOML files and interactive TUI:
